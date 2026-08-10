@@ -1,6 +1,6 @@
 <h1>
   <p align="center">
-    <a href="https://github.com/gbbirkisson/mcp-oda">
+    <a href="https://github.com/alexpomsft/mcp-oda">
       <img src="mcp.svg" alt="Logo" height="128">
     </a>
     <br>mcp-oda
@@ -55,13 +55,13 @@ This project requires Node.js (v18+).
 Authenticate with your Oda account:
 
 ```bash
-npx github:gbbirkisson/mcp-oda auth login --user your@email.com --pass yourpassword
+printf %s "yourpassword" | npx github:alexpomsft/mcp-oda auth login --user your@email.com --pass-stdin
 ```
 
 Verify your login status:
 
 ```bash
-npx github:gbbirkisson/mcp-oda auth user
+npx github:alexpomsft/mcp-oda auth user
 ```
 
 > [!NOTE]
@@ -69,36 +69,36 @@ npx github:gbbirkisson/mcp-oda auth user
 
 ### CLI Commands
 
-Running `npx github:gbbirkisson/mcp-oda` with no arguments prints help. The `mcp` subcommand
+Running `npx github:alexpomsft/mcp-oda` with no arguments prints help. The `mcp` subcommand
 starts the MCP server. All other operations are available as subcommands:
 
 ```bash
 # Start the MCP server
-npx github:gbbirkisson/mcp-oda mcp
+npx github:alexpomsft/mcp-oda mcp
 
 # Products
-npx github:gbbirkisson/mcp-oda product search melk
-npx github:gbbirkisson/mcp-oda product search melk --page 2
-npx github:gbbirkisson/mcp-oda product add 132
+npx github:alexpomsft/mcp-oda product search melk
+npx github:alexpomsft/mcp-oda product search melk --page 2
+npx github:alexpomsft/mcp-oda product add 132
 
 # Cart
-npx github:gbbirkisson/mcp-oda cart list
-npx github:gbbirkisson/mcp-oda cart remove 132
-npx github:gbbirkisson/mcp-oda cart clear
+npx github:alexpomsft/mcp-oda cart list
+npx github:alexpomsft/mcp-oda cart remove 132
+npx github:alexpomsft/mcp-oda cart clear
 
 # Recipes
-npx github:gbbirkisson/mcp-oda recipe search pizza
-npx github:gbbirkisson/mcp-oda recipe details 123
-npx github:gbbirkisson/mcp-oda recipe add 123 --portions 4
-npx github:gbbirkisson/mcp-oda recipe remove 123
+npx github:alexpomsft/mcp-oda recipe search pizza
+npx github:alexpomsft/mcp-oda recipe details 123
+npx github:alexpomsft/mcp-oda recipe add 123 --portions 4
+npx github:alexpomsft/mcp-oda recipe remove 123
 
 # Authentication
-npx github:gbbirkisson/mcp-oda auth login --user your@email.com --pass yourpassword
-npx github:gbbirkisson/mcp-oda auth logout
-npx github:gbbirkisson/mcp-oda auth user
+printf %s "yourpassword" | npx github:alexpomsft/mcp-oda auth login --user your@email.com --pass-stdin
+npx github:alexpomsft/mcp-oda auth logout
+npx github:alexpomsft/mcp-oda auth user
 
 # Maintenance
-npx github:gbbirkisson/mcp-oda clean
+npx github:alexpomsft/mcp-oda clean
 ```
 
 ### Configuration
@@ -111,7 +111,7 @@ Claude Desktop configuration example:
   "mcpServers": {
     "oda": {
       "command": "npx",
-      "args": ["-y", "github:gbbirkisson/mcp-oda", "mcp"]
+      "args": ["-y", "github:alexpomsft/mcp-oda", "mcp"]
     }
   }
 }
@@ -120,14 +120,14 @@ Claude Desktop configuration example:
 #### Claude Code
 
 ```bash
-/plugin marketplace add gbbirkisson/mcp-oda
-/plugin install mcp-oda@gbbirkisson/mcp-oda
+/plugin marketplace add alexpomsft/mcp-oda
+/plugin install mcp-oda@alexpomsft/mcp-oda
 ```
 
 #### Gemini CLI
 
 ```bash
-gemini extensions install https://github.com/gbbirkisson/mcp-oda
+gemini extensions install https://github.com/alexpomsft/mcp-oda
 ```
 
 ## Troubleshooting
@@ -138,10 +138,10 @@ If your login session is not persisting between runs:
 
 1. Try running with the `clean` subcommand to remove old session data:
    ```bash
-   npx github:gbbirkisson/mcp-oda clean
+   npx github:alexpomsft/mcp-oda clean
    ```
 2. Re-authenticate:
    ```bash
-   npx github:gbbirkisson/mcp-oda auth login --user your@email.com --pass yourpassword
+   printf %s "yourpassword" | npx github:alexpomsft/mcp-oda auth login --user your@email.com --pass-stdin
    ```
 3. Make sure you're using the same `--data-dir` for all commands if you've overridden the default.

@@ -53,7 +53,12 @@ export class OdaClient {
   }
 
   saveCookies() {
-    fs.writeFileSync(this.cookiePath, JSON.stringify(this.cookies, null, 2));
+    // Session cookies authenticate the Oda account; keep them private to the
+    // local account even when the host's default umask is permissive.
+    fs.writeFileSync(this.cookiePath, JSON.stringify(this.cookies, null, 2), {
+      mode: 0o600,
+    });
+    fs.chmodSync(this.cookiePath, 0o600);
   }
 
   private updateCookies(response: Response) {
@@ -196,12 +201,23 @@ export class OdaClient {
     return results;
   }
 
+  private decodeHtml(value: string): string {
+    return value
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   async fetchNextData(url: string): Promise<any | null> {
     const response = await this.getFollowRedirects(url);
     if (response.status === 425) {
-      throw new Error(
-        "Server returned 425 Too Early. Please try again later.",
-      );
+      throw new Error("Server returned 425 Too Early. Please try again later.");
     }
     const html = await response.text();
     return this.extractNextData(html);
@@ -210,9 +226,7 @@ export class OdaClient {
   async fetchJsonLd(url: string): Promise<any[]> {
     const response = await this.getFollowRedirects(url);
     if (response.status === 425) {
-      throw new Error(
-        "Server returned 425 Too Early. Please try again later.",
-      );
+      throw new Error("Server returned 425 Too Early. Please try again later.");
     }
     const html = await response.text();
     return this.extractJsonLd(html);
@@ -225,13 +239,15 @@ export class OdaClient {
    * keys (key[0]._id === prefix).
    */
   private findDehydratedQuery(nextData: any, keyPrefix: string): any | null {
-    const queries =
-      nextData?.props?.pageProps?.dehydratedState?.queries || [];
+    const queries = nextData?.props?.pageProps?.dehydratedState?.queries || [];
     for (const q of queries) {
       const key = q.queryKey;
       if (!Array.isArray(key) || key.length === 0) continue;
       const first = key[0];
-      if (first === keyPrefix || (typeof first === "object" && first?._id === keyPrefix)) {
+      if (
+        first === keyPrefix ||
+        (typeof first === "object" && first?._id === keyPrefix)
+      ) {
         return q.state?.data ?? null;
       }
     }
@@ -268,65 +284,191 @@ export class OdaClient {
 
   async searchProducts(query: string, page = 1): Promise<ProductPage> {
     const url = `${OdaClient.BASE_URL}/search/products/?q=${encodeURIComponent(query)}${page > 1 ? `&page=${page}` : ""}`;
-    const nextData = await this.fetchNextData(url);
-    return this.parseProductPage(url, nextData);
+    const response = await this.getFollowRedirects(url);
+    if (response.status === 425) {
+      throw new Error("Server returned 425 Too Early. Please try again later.");
+    }
+    const html = await response.text();
+    return this.parseProductPage(url, this.extractNextData(html), html);
   }
 
-  private parseProductPage(url: string, nextData: any): ProductPage {
-    if (!nextData) {
-      return { page_url: url, items: [], has_more: false };
-    }
-
+  private parseProductPage(
+    url: string,
+    nextData: any,
+    html?: string,
+  ): ProductPage {
     try {
       // Data is in dehydrated React Query state (key: "mixedSearch" or legacy "searchpageresponse")
-      const data = this.findDehydratedQuery(nextData, "mixedSearch")
-        ?? this.findDehydratedQuery(nextData, "searchpageresponse");
-      if (!data || !data.items) {
-        return { page_url: url, items: [], has_more: false };
+      const data =
+        this.findDehydratedQuery(nextData, "mixedSearch") ??
+        this.findDehydratedQuery(nextData, "searchpageresponse");
+      if (data?.items) {
+        const has_more = data.attributes?.hasMoreItems === true;
+        const items: SearchResult[] = [];
+
+        for (const item of data.items) {
+          if (item.type !== "product") continue;
+          const a = item.attributes;
+          if (!a) continue;
+
+          const id = a.id || item.id;
+          const name = a.fullName || a.name || "Unknown";
+          const subtitle = a.nameExtra || "";
+          const price = parseFloat(a.grossPrice) || 0;
+          const unitPrice = parseFloat(a.grossUnitPrice) || 0;
+          const unitPriceUnit = a.unitPriceQuantityAbbreviation || "";
+
+          items.push({
+            id,
+            name,
+            subtitle,
+            price,
+            relative_price: unitPrice,
+            relative_price_unit: unitPriceUnit ? `/${unitPriceUnit}` : "",
+          });
+        }
+        return { page_url: url, items, has_more };
       }
-
-      const has_more = data.attributes?.hasMoreItems === true;
-
-      const items: SearchResult[] = [];
-
-      for (const item of data.items) {
-        if (item.type !== "product") continue;
-        const a = item.attributes;
-        if (!a) continue;
-
-        const id = a.id || item.id;
-        const name = a.fullName || a.name || "Unknown";
-        const subtitle = a.nameExtra || "";
-        const price = parseFloat(a.grossPrice) || 0;
-        const unitPrice = parseFloat(a.grossUnitPrice) || 0;
-        const unitPriceUnit = a.unitPriceQuantityAbbreviation || "";
-
-        items.push({
-          id,
-          name,
-          subtitle,
-          price,
-          relative_price: unitPrice,
-          relative_price_unit: unitPriceUnit ? `/${unitPriceUnit}` : "",
-        });
-      }
-
-      return { page_url: url, items, has_more };
     } catch (e) {
       console.error("Failed to parse product page", e);
-      return { page_url: url, items: [], has_more: false };
     }
+
+    // Oda migrated product search to the Next.js App Router. The page is
+    // server-rendered but no longer includes __NEXT_DATA__, so retain the old
+    // parser above and use the stable rendered product cards as a fallback.
+    if (!html) return { page_url: url, items: [], has_more: false };
+    const cards =
+      html.match(
+        /<article\b[^>]*data-testid="product-tile"[\s\S]*?<\/article>/g,
+      ) || [];
+    const items: SearchResult[] = [];
+    for (const card of cards) {
+      const href = card.match(/href="\/no\/products\/(\d+)-[^"]*"/);
+      const label = card.match(/aria-label="([^"]+)"/);
+      const title = card.match(
+        /href="\/no\/products\/\d+-[^"]*"[^>]*>\s*<p[^>]*>([\s\S]*?)<\/p>/,
+      );
+      const subtitle = card.match(
+        /ProductNameExtraTile[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/,
+      );
+      const price = card.match(
+        /<span[^>]*>\s*([\d.,\s]+)\s*(?:&nbsp;|\u00a0| )?kr\s*<\/span>/,
+      );
+      if (!href || !title) continue;
+      const unitPrice = card.match(
+        /<p[^>]*>\s*([\d.,\s]+)\s*kr\s*[^<]*<\/p>/g,
+      )?.[1];
+      const unitPriceMatch = unitPrice?.match(
+        /([\d.,\s]+)\s*kr\s*\/?\s*([^<]*)/,
+      );
+      items.push({
+        id: Number(href[1]),
+        name: this.decodeHtml(title[1]),
+        subtitle: this.decodeHtml(subtitle?.[1] || label?.[1] || ""),
+        price:
+          parseFloat(
+            (price?.[1] || "0").replace(/\s/g, "").replace(",", "."),
+          ) || 0,
+        relative_price:
+          parseFloat(
+            (unitPriceMatch?.[1] || "0").replace(/\s/g, "").replace(",", "."),
+          ) || 0,
+        relative_price_unit: unitPriceMatch?.[2]?.trim()
+          ? `/${this.decodeHtml(unitPriceMatch[2])}`
+          : "",
+      });
+    }
+    const page = Number(new URL(url).searchParams.get("page") || "1");
+    return {
+      page_url: url,
+      items,
+      has_more: items.length > 0 && html.includes(`page=${page + 1}`),
+    };
   }
 
   // --- Cart methods ---
+
+  async getFrequentProducts(
+    limit = 20,
+    maxOrders = 30,
+  ): Promise<
+    Array<{
+      id: number;
+      name: string;
+      times_ordered: number;
+      total_quantity: number;
+    }>
+  > {
+    let url: string | null = `${OdaClient.API_BASE}/api/v1/orders/`;
+    const orderNumbers: string[] = [];
+
+    // The order-list endpoint is paginated by date. Only request enough order
+    // details to answer this explicit, read-only frequent-purchases query.
+    while (url && orderNumbers.length < maxOrders) {
+      const page = (await (await this.apiGet(url)).json()) as any;
+      for (const month of page.results || []) {
+        for (const order of month.orders || []) {
+          if (order.order_number && orderNumbers.length < maxOrders) {
+            orderNumbers.push(order.order_number);
+          }
+        }
+      }
+      url = page.has_more && page.get_more_url ? page.get_more_url : null;
+    }
+
+    const products = new Map<
+      number,
+      {
+        id: number;
+        name: string;
+        times_ordered: number;
+        total_quantity: number;
+      }
+    >();
+    for (const orderNumber of orderNumbers) {
+      const detail = (await (
+        await this.apiGet(
+          `${OdaClient.API_BASE}/api/v1/orders/${encodeURIComponent(orderNumber)}/`,
+        )
+      ).json()) as any;
+      for (const group of detail.items?.item_groups || []) {
+        for (const item of group.items || []) {
+          if (!Number.isFinite(item.product_id) || !item.description) continue;
+          const existing = products.get(item.product_id) || {
+            id: item.product_id,
+            name: item.description,
+            times_ordered: 0,
+            total_quantity: 0,
+          };
+          existing.times_ordered += 1;
+          existing.total_quantity += Number(item.quantity) || 0;
+          products.set(item.product_id, existing);
+        }
+      }
+    }
+
+    return [...products.values()]
+      .sort(
+        (a, b) =>
+          b.times_ordered - a.times_ordered ||
+          b.total_quantity - a.total_quantity ||
+          a.name.localeCompare(b.name),
+      )
+      .slice(0, limit);
+  }
+
+  async getCartRecommendations(): Promise<unknown> {
+    const response = await this.apiGet(
+      `${OdaClient.API_BASE}/api/v1/cart/recommendations/`,
+    );
+    return response.json();
+  }
 
   async getCartContents(): Promise<CartItem[]> {
     // Cart data is not in __NEXT_DATA__, use the REST API directly
     const response = await this.apiGet(OdaClient.CART_API);
     if (response.status === 425) {
-      throw new Error(
-        "Server returned 425 Too Early. Please try again later.",
-      );
+      throw new Error("Server returned 425 Too Early. Please try again later.");
     }
     if (!response.ok) {
       return [];
@@ -358,8 +500,7 @@ export class OdaClient {
       const quantity = item.quantity || 1;
       const price = parseFloat(product.gross_price) || 0;
       const unitPrice = parseFloat(product.gross_unit_price) || 0;
-      const unitPriceUnit =
-        product.unit_price_quantity_abbreviation || "";
+      const unitPriceUnit = product.unit_price_quantity_abbreviation || "";
 
       items.push({
         id: productId,
@@ -376,13 +517,14 @@ export class OdaClient {
   }
 
   async addToCart(productId: number, count = 1): Promise<void> {
-    const response = await this.apiPost(
-      OdaClient.CART_ITEMS_API,
-      { items: [{ product_id: productId, quantity: count }] },
-    );
+    const response = await this.apiPost(OdaClient.CART_ITEMS_API, {
+      items: [{ product_id: productId, quantity: count }],
+    });
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`Add to cart failed: HTTP ${response.status}${body ? ` – ${body.slice(0, 500)}` : ""}`);
+      throw new Error(
+        `Add to cart failed: HTTP ${response.status}${body ? ` – ${body.slice(0, 500)}` : ""}`,
+      );
     }
   }
 
@@ -394,7 +536,9 @@ export class OdaClient {
     );
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`Remove from cart failed: HTTP ${response.status}${body ? ` – ${body.slice(0, 500)}` : ""}`);
+      throw new Error(
+        `Remove from cart failed: HTTP ${response.status}${body ? ` – ${body.slice(0, 500)}` : ""}`,
+      );
     }
   }
 
@@ -406,13 +550,19 @@ export class OdaClient {
     );
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`Clear cart failed: HTTP ${response.status}${body ? ` – ${body.slice(0, 500)}` : ""}`);
+      throw new Error(
+        `Clear cart failed: HTTP ${response.status}${body ? ` – ${body.slice(0, 500)}` : ""}`,
+      );
     }
   }
 
   // --- Recipe methods ---
 
-  async searchRecipes(query?: string | null, page = 1, filterIds?: string[]): Promise<RecipePage> {
+  async searchRecipes(
+    query?: string | null,
+    page = 1,
+    filterIds?: string[],
+  ): Promise<RecipePage> {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
     if (page > 1) params.set("page", String(page));
@@ -430,8 +580,9 @@ export class OdaClient {
 
     try {
       // Data is in dehydrated React Query state (key: "mixedSearch" or legacy "searchresponse")
-      const data = this.findDehydratedQuery(nextData, "mixedSearch")
-        ?? this.findDehydratedQuery(nextData, "searchresponse");
+      const data =
+        this.findDehydratedQuery(nextData, "mixedSearch") ??
+        this.findDehydratedQuery(nextData, "searchresponse");
       if (!data || !data.items) {
         return { page_url: url, filters: [], items: [], has_more: false };
       }
@@ -497,8 +648,9 @@ export class OdaClient {
     if (!nextData) {
       throw new Error(`Could not load recipe page for ID ${recipeId}`);
     }
-    const data = this.findDehydratedQuery(nextData, "recipeDetailApi")
-      ?? this.findDehydratedQuery(nextData, "get-recipe-detail");
+    const data =
+      this.findDehydratedQuery(nextData, "recipeDetailApi") ??
+      this.findDehydratedQuery(nextData, "get-recipe-detail");
     if (!data) {
       throw new Error(`Could not find recipe data for ID ${recipeId}`);
     }
@@ -506,8 +658,31 @@ export class OdaClient {
   }
 
   async getRecipeDetails(recipeId: number): Promise<RecipeDetail> {
-    const data = await this.getRecipeData(recipeId);
-    return this.createRecipeDetailFromApi(data);
+    try {
+      const data = await this.getRecipeData(recipeId);
+      return this.createRecipeDetailFromApi(data);
+    } catch {
+      // Recipe pages are now also App Router pages. JSON-LD preserves the
+      // public recipe detail needed for read-only lookups, but is deliberately
+      // not used for cart mutation because it has no product IDs.
+      const jsonLd = await this.fetchJsonLd(
+        `${OdaClient.BASE_URL}/recipes/${recipeId}`,
+      );
+      const recipe = jsonLd.find((item) => item?.["@type"] === "Recipe");
+      if (!recipe)
+        throw new Error(`Could not load recipe page for ID ${recipeId}`);
+      return {
+        name: recipe.name || "Unknown",
+        description: recipe.description || "",
+        ingredients: recipe.recipeIngredient || [],
+        instructions: (recipe.recipeInstructions || [])
+          .map((step: any) =>
+            typeof step === "string" ? step : step.text || "",
+          )
+          .filter(Boolean),
+        image_url: Array.isArray(recipe.image) ? recipe.image[0] : recipe.image,
+      };
+    }
   }
 
   private createRecipeDetailFromApi(data: any): RecipeDetail {
@@ -528,17 +703,20 @@ export class OdaClient {
     );
 
     // Instructions
-    const instructions: string[] = (
-      data.instructions?.instructions || []
-    ).map((step: any) => step.text || "");
+    const instructions: string[] = (data.instructions?.instructions || []).map(
+      (step: any) => step.text || "",
+    );
 
-    return { name, description, ingredients, instructions, image_url: imageUrl };
+    return {
+      name,
+      description,
+      ingredients,
+      instructions,
+      image_url: imageUrl,
+    };
   }
 
-  async addRecipeToCart(
-    recipeId: number,
-    portions: number,
-  ): Promise<void> {
+  async addRecipeToCart(recipeId: number, portions: number): Promise<void> {
     const data = await this.getRecipeData(recipeId);
     const ingredients: any[] = data.ingredients || [];
     const items = ingredients
@@ -556,7 +734,9 @@ export class OdaClient {
     );
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`Add recipe to cart failed: HTTP ${response.status}${body ? ` – ${body.slice(0, 500)}` : ""}`);
+      throw new Error(
+        `Add recipe to cart failed: HTTP ${response.status}${body ? ` – ${body.slice(0, 500)}` : ""}`,
+      );
     }
   }
 
@@ -567,7 +747,9 @@ export class OdaClient {
     );
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`Remove recipe from cart failed: HTTP ${response.status}${body ? ` – ${body.slice(0, 500)}` : ""}`);
+      throw new Error(
+        `Remove recipe from cart failed: HTTP ${response.status}${body ? ` – ${body.slice(0, 500)}` : ""}`,
+      );
     }
   }
 
@@ -602,8 +784,7 @@ export class OdaClient {
     try {
       const user = this.findDehydratedQuery(nextData, "user");
       if (user) {
-        const name =
-          `${user.firstName || ""} ${user.lastName || ""}`.trim();
+        const name = `${user.firstName || ""} ${user.lastName || ""}`.trim();
         return name || user.email || null;
       }
     } catch {
