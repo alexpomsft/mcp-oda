@@ -85,6 +85,8 @@ npx github:alexpomsft/mcp-oda product add 132
 # Saved shopping lists
 npx github:alexpomsft/mcp-oda saved-list list
 npx github:alexpomsft/mcp-oda saved-list details 123
+# Adds every list item to the cart; requires an explicit confirmation string
+npx github:alexpomsft/mcp-oda saved-list add 123 --confirmation "ADD SAVED LIST TO CART"
 
 # Cart
 npx github:alexpomsft/mcp-oda cart list
